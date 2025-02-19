@@ -34,3 +34,4 @@ Thumbs.db
 # Data files
 /data/*
 !data/.gitkeep
+/datasets
