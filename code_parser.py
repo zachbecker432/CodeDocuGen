@@ -1,22 +1,28 @@
 import re
 from typing import List, Dict, Tuple
-from util import FunctionDetails
+from util import FunctionDetails, FUNCTION_PATTERN
 
 class CSharpParser:
-    def _extract_function_block(self, lines: List[str], start_index: int) -> Tuple[List[str], int]:
+    def _extract_function_block(self, lines: List[str], start_index: int) -> Tuple[List[str], List[str]]:
         """
-        Extract a complete function block by tracking brace matching.
+        Extract a complete function block by tracking brace matching and detect function calls.
         
         Args:
             lines: List of code lines
             start_index: Starting line index of the function
             
         Returns:
-            Tuple containing the function lines and ending index
+            Tuple containing:
+                - List of function block lines
+                - List of function calls found within the block
         """
-        function_lines = []
+        function_block = []
+        function_calls = []
         brace_count = 0
         started = False
+
+        # Pattern to match function calls - matches word followed by opening parenthesis
+        call_pattern = re.compile(r'(\w+)\s*\(')
 
         for i, line in enumerate(lines[start_index:], start=start_index):
             if '{' in line:
@@ -25,14 +31,40 @@ class CSharpParser:
             if '}' in line:
                 brace_count -= line.count('}')
                 
-            function_lines.append(line)
+            function_block.append(line)
+            
+            # Find function calls in this line
+            if calls := call_pattern.findall(line):
+                # Filter out control flow keywords
+                filtered_calls = [call for call in calls 
+                                if call not in ('if', 'for', 'while', 'switch', 'catch')]
+                function_calls.extend(filtered_calls)
             
             if started and brace_count <= 0:
-                return function_lines, i + 1
+                break
                 
-        return function_lines, len(lines)
+        return function_block, list(set(function_calls))
+    
+    def parse_files(self, filepaths: List[str]) -> Dict[str, List[FunctionDetails]]:
+        """
+        Parse multiple C# files and extract functions with their documentation.
+        
+        Args:
+            filepaths: List of paths to C# files to parse
+            
+        Returns:
+            Dictionary mapping filenames to lists of function details
+        """
+        parsed_files = {}
+        for filepath in filepaths:
+            functions = self.parse_cs_file(filepath)
+            # Extract just the filename without path
+            filename = filepath.split('.')[0]
+            parsed_files[filename] = functions
+            
+        return parsed_files
 
-    def parse_cs_file(self, filepath: str) -> Dict[str, FunctionDetails]:
+    def parse_cs_file(self, filepath: str) -> List[FunctionDetails]:
         """
         Parse a C# file to extract functions and their XML documentation.
         
@@ -42,48 +74,44 @@ class CSharpParser:
         Returns:
             Dictionary mapping function names to their details
         """
-        FUNCTION_PATTERN = re.compile(
-            r'^\s*(?:static|public|private|protected|internal|void)'    # Access modifiers
-            r'\s+(?:static\s+)?'                                        # Optional static
-            r'(?:[\w\<\>\[\]]+\s+)?'                                    # Return type
-            r'(?P<name>\w+)'                                            # Function name
-            r'\s*\([^)]*\)'                                             # Parameters
-            r'\s*(?:\{|;)?'                                             # Opening brace or semicolon
-        )
+        
+        
+        class_name = filepath.split('.')[0]
+        functions = []
         
         with open(filepath, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             
-        functions = []
-        i = 0
-        
-        while i < len(lines):
-            line = lines[i].strip()
-            if match := FUNCTION_PATTERN.search(line):
-                function_name = match.group("name")
+        # Find all function matches in the file
+        for line_num, line in enumerate(lines):
+            line = line.strip()
+            if not (match := FUNCTION_PATTERN.search(line)):
+                continue
                 
-                # Get XML comments
-                xml_lines = []
-                for j in range(i-1, -1, -1):
-                    if not lines[j].strip().startswith("///"):
-                        break
-                    xml_lines.insert(0, lines[j].strip())
-                
-                # Get function implementation
-                function_block, i = self._extract_function_block(lines, i)
-                
-                function_details = FunctionDetails(
-                    name=function_name,
-                    type="function",
-                    xml_comment="\n".join(xml_lines),
-                    code="".join(function_block)
-                )
-                
-                functions.append(function_details)
-                
-                self.print_function_details(function_name, function_details)
-            else:
-                i += 1
+            # Get XML comments by looking backwards
+            xml_lines = []
+            for comment_line in reversed(lines[:line_num]):
+                if not comment_line.strip().startswith("///"):
+                    break
+                xml_lines.insert(0, comment_line.strip())
+            
+            # Get function implementation
+            function_block, function_calls = self._extract_function_block(lines, line_num)
+            
+            # TODO: Get references to the function calls
+
+            # Create and store function details
+            function = FunctionDetails(
+                name=match.group("name"),
+                type="function",
+                class_name=class_name, 
+                xml_comment="\n".join(xml_lines),
+                code="".join(function_block),
+                references=[]
+            )
+            functions.append(function)
+            
+            self.print_function_details(match.group("name"), function)
                 
         return functions
 
